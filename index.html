@@ -135,11 +135,11 @@
         </div>
         <div class="control-group">
             <label>Iz q | Der</label>
-            <input type="range" id="slider-x" min="-30" max="30" step="0.1" value="0">
+            <input type="range" id="slider-x" min="-80" max="80" step="0.1" value="0">
         </div>
         <div class="control-group">
             <label>Abajo | Arriba</label>
-            <input type="range" id="slider-y" min="-20" max="20" step="0.1" value="0">
+            <input type="range" id="slider-y" min="-60" max="60" step="0.1" value="0">
         </div>
         <div class="control-group">
             <label>Acercar</label>
@@ -204,12 +204,12 @@
         const state = {
             targetPos: new THREE.Vector3(0, 0, 0),
             currentPos: new THREE.Vector3(0, 0, 0),
-            // Reemplazamos los ángulos simples por Cuaterniones para tracking total
             targetQuat: new THREE.Quaternion(),
             currentQuat: new THREE.Quaternion(),
             
             handDetected: false,
-            lerpSpeed: 0.05
+            lerpPos: 0.025, 
+            lerpRot: 0.04   
         };
 
         // --- THREE.JS SETUP ---
@@ -288,33 +288,27 @@
         const tulip = new THREE.Points(geometry, material);
         scene.add(tulip);
 
-        // --- ANIMACIÓN FLUIDA ---
+        // --- ANIMACIÓN FLUIDA CON PESO ---
         const clock = new THREE.Clock();
 
         function animate() {
             requestAnimationFrame(animate);
             const time = clock.getElapsedTime();
 
-            // 1. Seguimiento suave de la posición (X, Y, y ahora Z para el Zoom)
-            state.currentPos.lerp(state.targetPos, state.lerpSpeed);
+            state.currentPos.lerp(state.targetPos, state.lerpPos);
+            state.currentQuat.slerp(state.targetQuat, state.lerpRot);
             
-            // 2. Seguimiento suave de la rotación 3D completa (Inclinación y Giro) usando Slerp
-            state.currentQuat.slerp(state.targetQuat, state.lerpSpeed);
-            
-            // Aplicar matriz base (posición base + posición flotante)
             tulip.position.set(
                 state.currentPos.x,
-                state.currentPos.y + Math.sin(time * 0.8) * 1.5, // Flotación constante
+                state.currentPos.y + Math.sin(time * 0.8) * 1.5,
                 state.currentPos.z
             );
             
-            // Aplicar rotación
             if (controlMode === 'auto' && state.handDetected) {
                 tulip.quaternion.copy(state.currentQuat);
             } else if (controlMode === 'manual') {
                 tulip.quaternion.copy(state.currentQuat);
             } else {
-                // Modo inactivo (gira suavemente esperando la mano)
                 tulip.rotation.y += 0.003;
             }
 
@@ -330,7 +324,6 @@
 
         // --- LÓGICA DE INTERACCIÓN ---
         
-        // Sliders Manuales
         els.sliderRot.addEventListener('input', (e) => { 
             const euler = new THREE.Euler(0, parseFloat(e.target.value), 0, 'XYZ');
             state.targetQuat.setFromEuler(euler); 
@@ -352,7 +345,6 @@
             state.targetQuat.setFromEuler(new THREE.Euler(0, 0, 0)); 
         }
 
-        // MediaPipe Hands
         const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
         hands.setOptions({
             maxNumHands: 1,
@@ -375,48 +367,39 @@
                     state.handDetected = true;
                     els.status.innerText = "Conexión mágica establecida";
                     els.status.style.color = "#ff96c8";
-                    state.lerpSpeed = 0.1; // Reacción rápida y fluida
+                    state.lerpPos = 0.025; 
+                    state.lerpRot = 0.04;
                 }
 
-                // --- 1. ZOOM: Midiendo qué tan abierta está la mano ---
-                // Usamos distancia 2D (pantalla) para más estabilidad. 
-                // Distancia base: Muñeca (0) a Nudillo Central (9)
+                // ZOOM
                 const palmDist = Math.hypot(lm[9].x - lm[0].x, lm[9].y - lm[0].y);
-                // Distancia total: Muñeca (0) a Punta del dedo central (12)
                 const totalDist = Math.hypot(lm[12].x - lm[0].x, lm[12].y - lm[0].y);
-                
-                // Ratio: Si es ~1.0 está cerrada (puño). Si es ~1.8 o más está abierta.
                 const openness = totalDist / (palmDist + 0.0001); 
                 let targetZ = THREE.MathUtils.mapLinear(openness, 1.1, 1.8, -5, 45);
 
-                // --- 2. POSICIÓN X/Y ---
-                let targetX = (0.5 - lm[9].x) * 60; 
-                let targetY = (0.5 - lm[9].y) * 45;
+                // POSICIÓN: ¡Multiplicadores más grandes para más libertad!
+                let targetX = (0.5 - lm[9].x) * 140; // Antes era 60
+                let targetY = (0.5 - lm[9].y) * 100; // Antes era 45
 
+                // LIMITES EXPANDIDOS (Clamp)
                 state.targetPos.set(
-                    THREE.MathUtils.clamp(targetX, -35, 35),
-                    THREE.MathUtils.clamp(targetY, -25, 25),
+                    THREE.MathUtils.clamp(targetX, -80, 80), // Antes -35 a 35
+                    THREE.MathUtils.clamp(targetY, -60, 60), // Antes -25 a 25
                     THREE.MathUtils.clamp(targetZ, -10, 50)
                 );
 
-                // --- 3. INCLINACIÓN Y ROTACIÓN (Quaternions 3D) ---
-                // Invertimos X e Y porque la cámara web funciona como espejo
+                // INCLINACIÓN Y ROTACIÓN
                 const vWrist = new THREE.Vector3(-lm[0].x, -lm[0].y, lm[0].z);
                 const vIndex = new THREE.Vector3(-lm[5].x, -lm[5].y, lm[5].z);
                 const vPinky = new THREE.Vector3(-lm[17].x, -lm[17].y, lm[17].z);
                 const vMid = new THREE.Vector3(-lm[9].x, -lm[9].y, lm[9].z);
 
-                // Eje X: De izquierda a derecha de la palma
                 const xAxis = new THREE.Vector3().subVectors(vPinky, vIndex).normalize();
-                // Eje Y: De la muñeca hacia los dedos (Arriba)
                 const yAxis = new THREE.Vector3().subVectors(vMid, vWrist).normalize();
-                // Eje Z: Vector normal (Hacia afuera de la palma)
                 const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
                 
-                // Recalculamos X para garantizar que los 3 ejes formen ángulos perfectos de 90 grados
                 xAxis.crossVectors(yAxis, zAxis).normalize();
 
-                // Construimos la rotación y la aplicamos al objetivo
                 const mRot = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
                 state.targetQuat.setFromRotationMatrix(mRot);
 
@@ -425,16 +408,16 @@
                     state.handDetected = false;
                     els.status.innerText = "Buscando tu mano...";
                     els.status.style.color = "rgba(255, 255, 255, 0.6)";
-                    state.lerpSpeed = 0.02; 
                     
-                    // Retorno suave al centro si pierde la mano
+                    state.lerpPos = 0.01; 
+                    state.lerpRot = 0.01;
+                    
                     state.targetPos.set(0, 0, 0);
                     state.targetQuat.setFromEuler(new THREE.Euler(0.15, 0, 0));
                 }
             }
         });
 
-        // Inicialización de Cámara
         const cameraUtils = new Camera(els.video, {
             onFrame: async () => {
                 if (controlMode === 'auto') {
