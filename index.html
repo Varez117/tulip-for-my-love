@@ -165,10 +165,13 @@
                 sin(uTime * 2.8 + aSeed * 8.0)
             ) * aSize * 0.8;
 
-            // 2. Efecto de Arrastre (Ahora más controlado por el JS)
-            vec3 beeTrail = uVelocity * aSize * 0.05;
+            // 2. Efecto de Arrastre Heterogéneo (Enjambre Rezagado)
+            // Usamos el aSeed elevado al cuadrado para que solo unas pocas partículas se arrastren mucho
+            // y la mayoría se mantenga cerca del núcleo.
+            float individualDrag = 0.02 + pow(aSeed, 3.0) * 2.5; 
+            vec3 beeTrail = uVelocity * individualDrag * aSize * 0.1;
 
-            // Aplicar físicas de enjambre
+            // Aplicar físicas
             pos += (beeMotion - beeTrail) * uSwarmStrength;
 
             vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
@@ -227,8 +230,9 @@
             currentQuat: new THREE.Quaternion(),
             
             handDetected: false,
-            lerpPos: 0.025, 
-            lerpRot: 0.04,
+            // Valores muy reducidos para darle un peso masivo y movimientos fluidos
+            lerpPos: 0.015, 
+            lerpRot: 0.02,
             
             prevPos: new THREE.Vector3(0, 0, 0), 
             currentVelocity: new THREE.Vector3(0, 0, 0) 
@@ -355,18 +359,16 @@
             state.currentPos.lerp(state.targetPos, state.lerpPos);
             state.currentQuat.slerp(state.targetQuat, state.lerpRot);
             
-            // FÍSICAS DE ENJAMBRE CORREGIDAS
             if (dt > 0) {
-                // Calcular velocidad cruda
                 let rawVel = new THREE.Vector3().subVectors(state.currentPos, state.prevPos).divideScalar(dt);
                 
-                // LÍMITE DE SEGURIDAD (Clamp): Evita que el tulipán se rompa al mover rápido
-                if (rawVel.length() > 30) {
-                    rawVel.setLength(30);
+                // Límite más estricto para evitar deformaciones locas
+                if (rawVel.length() > 20) {
+                    rawVel.setLength(20);
                 }
                 
-                // Suavizar la transición de la velocidad para que la inercia sea natural
-                state.currentVelocity.lerp(rawVel, 0.15);
+                // Transición de inercia mucho más lenta (suavidad pura)
+                state.currentVelocity.lerp(rawVel, 0.08);
             }
 
             material.uniforms.uTime.value = time;
@@ -384,7 +386,7 @@
             } else if (controlMode === 'manual') {
                 tulip.quaternion.copy(state.currentQuat);
             } else {
-                tulip.rotation.y += 0.003; 
+                tulip.rotation.y += 0.002; 
             }
 
             starField.position.x = -state.currentPos.x * 0.05;
@@ -452,8 +454,9 @@
                     state.handDetected = true;
                     els.status.innerText = "Conexión mágica establecida";
                     els.status.style.color = "#ff96c8";
-                    state.lerpPos = 0.025; 
-                    state.lerpRot = 0.04;
+                    // Recupera su peso masivo
+                    state.lerpPos = 0.015; 
+                    state.lerpRot = 0.02;
                     state.prevPos.copy(state.currentPos);
                     state.currentVelocity.set(0, 0, 0);
                 }
@@ -492,7 +495,7 @@
                     els.status.innerText = "Buscando tu mano...";
                     els.status.style.color = "rgba(255, 255, 255, 0.6)";
                     
-                    state.lerpPos = 0.01; 
+                    state.lerpPos = 0.005; 
                     state.lerpRot = 0.01;
                     
                     state.targetPos.set(0, 0, 0);
