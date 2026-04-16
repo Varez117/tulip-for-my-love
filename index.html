@@ -149,10 +149,29 @@
 
     <script id="vertexShader" type="x-shader/x-vertex">
         attribute float aSize;
+        attribute float aSeed; 
         varying vec3 vPos;
+        uniform float uTime;
+        uniform vec3 uVelocity; 
+        uniform float uSwarmStrength; 
 
         void main() {
-            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vec3 pos = position;
+
+            // 1. Movimiento Independiente "Wobbly" 
+            vec3 beeMotion = vec3(
+                sin(uTime * 3.0 + aSeed * 10.0),
+                cos(uTime * 3.5 + aSeed * 12.0),
+                sin(uTime * 2.8 + aSeed * 8.0)
+            ) * aSize * 0.8;
+
+            // 2. Efecto de Arrastre (Ahora más controlado por el JS)
+            vec3 beeTrail = uVelocity * aSize * 0.05;
+
+            // Aplicar físicas de enjambre
+            pos += (beeMotion - beeTrail) * uSwarmStrength;
+
+            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
             gl_Position = projectionMatrix * mvPosition;
             
             gl_PointSize = (4.0 * aSize) * (50.0 / -mvPosition.z);
@@ -209,12 +228,15 @@
             
             handDetected: false,
             lerpPos: 0.025, 
-            lerpRot: 0.04   
+            lerpRot: 0.04,
+            
+            prevPos: new THREE.Vector3(0, 0, 0), 
+            currentVelocity: new THREE.Vector3(0, 0, 0) 
         };
 
         // --- THREE.JS SETUP ---
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x050005, 0.008);
+        scene.fog = new THREE.FogExp2(0x050005, 0.005);
 
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
         camera.position.z = 65;
@@ -225,12 +247,39 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         document.body.appendChild(renderer.domElement);
 
+        // --- CONSTRUCCIÓN DEL FONDO DE ESTRELLAS ---
+        const starsGeometry = new THREE.BufferGeometry();
+        const starsCount = 2000;
+        const starsPositions = [];
+
+        for(let i = 0; i < starsCount; i++) {
+            let x = (Math.random() - 0.5) * 400;
+            let y = (Math.random() - 0.5) * 400;
+            let z = (Math.random() - 0.5) * 300 - 50; 
+            
+            starsPositions.push(x, y, z);
+        }
+
+        starsGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starsPositions, 3));
+        
+        const starsMaterial = new THREE.PointsMaterial({
+            color: 0xffe6f0, 
+            size: 0.8,
+            transparent: true,
+            opacity: 0.8,
+            sizeAttenuation: true
+        });
+
+        const starField = new THREE.Points(starsGeometry, starsMaterial);
+        scene.add(starField);
+
+
         // --- CONSTRUCCIÓN DEL TULIPÁN ---
         const geometry = new THREE.BufferGeometry();
         const positions = [];
         const sizes = [];
+        const seeds = []; 
 
-        // 1. Tallo
         for(let i = 0; i < 5000; i++) {
             let t = Math.random();
             let y = -25 + 25 * t; 
@@ -238,9 +287,9 @@
             let r = 0.5 + Math.random() * 0.2;
             positions.push(r * Math.cos(angle), y, r * Math.sin(angle));
             sizes.push(0.3 + Math.random() * 0.5);
+            seeds.push(Math.random()); 
         }
 
-        // 2. Copa (Capullo)
         for(let i = 0; i < 30000; i++) {
             let h = Math.random(); 
             let theta = Math.random() * Math.PI * 2;
@@ -258,9 +307,9 @@
 
             positions.push(x, y, z);
             sizes.push(0.5 + Math.random() * 0.8);
+            seeds.push(Math.random()); 
         }
 
-        // 3. Polvo Mágico
         for(let i = 0; i < 5000; i++) {
             let r = 15 + Math.random() * 25; 
             let theta = Math.random() * Math.PI * 2;
@@ -272,14 +321,21 @@
             
             positions.push(x, y, z);
             sizes.push(Math.random() * 0.6);
+            seeds.push(Math.random()); 
         }
 
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
+        geometry.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1)); 
 
         const material = new THREE.ShaderMaterial({
             vertexShader: document.getElementById('vertexShader').textContent,
             fragmentShader: document.getElementById('fragmentShader').textContent,
+            uniforms: {
+                uTime: { value: 0 },
+                uVelocity: { value: new THREE.Vector3(0, 0, 0) }, 
+                uSwarmStrength: { value: 1.0 } 
+            },
             transparent: true,
             depthWrite: false,
             blending: THREE.AdditiveBlending
@@ -288,19 +344,38 @@
         const tulip = new THREE.Points(geometry, material);
         scene.add(tulip);
 
-        // --- ANIMACIÓN FLUIDA CON PESO ---
+        // --- ANIMACIÓN FLUIDA ---
         const clock = new THREE.Clock();
 
         function animate() {
             requestAnimationFrame(animate);
             const time = clock.getElapsedTime();
+            const dt = clock.getDelta(); 
 
             state.currentPos.lerp(state.targetPos, state.lerpPos);
             state.currentQuat.slerp(state.targetQuat, state.lerpRot);
             
+            // FÍSICAS DE ENJAMBRE CORREGIDAS
+            if (dt > 0) {
+                // Calcular velocidad cruda
+                let rawVel = new THREE.Vector3().subVectors(state.currentPos, state.prevPos).divideScalar(dt);
+                
+                // LÍMITE DE SEGURIDAD (Clamp): Evita que el tulipán se rompa al mover rápido
+                if (rawVel.length() > 30) {
+                    rawVel.setLength(30);
+                }
+                
+                // Suavizar la transición de la velocidad para que la inercia sea natural
+                state.currentVelocity.lerp(rawVel, 0.15);
+            }
+
+            material.uniforms.uTime.value = time;
+            material.uniforms.uVelocity.value.copy(state.currentVelocity);
+            material.uniforms.uSwarmStrength.value = 1.0; 
+
             tulip.position.set(
                 state.currentPos.x,
-                state.currentPos.y + Math.sin(time * 0.8) * 1.5,
+                state.currentPos.y + Math.sin(time * 0.8) * 1.5, 
                 state.currentPos.z
             );
             
@@ -309,8 +384,15 @@
             } else if (controlMode === 'manual') {
                 tulip.quaternion.copy(state.currentQuat);
             } else {
-                tulip.rotation.y += 0.003;
+                tulip.rotation.y += 0.003; 
             }
+
+            starField.position.x = -state.currentPos.x * 0.05;
+            starField.position.y = -state.currentPos.y * 0.05;
+            starField.rotation.y -= 0.0002;
+            starField.rotation.x -= 0.0001;
+
+            state.prevPos.copy(state.currentPos);
 
             renderer.render(scene, camera);
         }
@@ -343,6 +425,9 @@
             
             state.targetPos.set(0, 0, 0);
             state.targetQuat.setFromEuler(new THREE.Euler(0, 0, 0)); 
+            
+            state.prevPos.copy(state.currentPos);
+            state.currentVelocity.set(0, 0, 0);
         }
 
         const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
@@ -369,26 +454,24 @@
                     els.status.style.color = "#ff96c8";
                     state.lerpPos = 0.025; 
                     state.lerpRot = 0.04;
+                    state.prevPos.copy(state.currentPos);
+                    state.currentVelocity.set(0, 0, 0);
                 }
 
-                // ZOOM
                 const palmDist = Math.hypot(lm[9].x - lm[0].x, lm[9].y - lm[0].y);
                 const totalDist = Math.hypot(lm[12].x - lm[0].x, lm[12].y - lm[0].y);
                 const openness = totalDist / (palmDist + 0.0001); 
                 let targetZ = THREE.MathUtils.mapLinear(openness, 1.1, 1.8, -5, 45);
 
-                // POSICIÓN: ¡Multiplicadores más grandes para más libertad!
-                let targetX = (0.5 - lm[9].x) * 140; // Antes era 60
-                let targetY = (0.5 - lm[9].y) * 100; // Antes era 45
+                let targetX = (0.5 - lm[9].x) * 140; 
+                let targetY = (0.5 - lm[9].y) * 100; 
 
-                // LIMITES EXPANDIDOS (Clamp)
                 state.targetPos.set(
-                    THREE.MathUtils.clamp(targetX, -80, 80), // Antes -35 a 35
-                    THREE.MathUtils.clamp(targetY, -60, 60), // Antes -25 a 25
+                    THREE.MathUtils.clamp(targetX, -80, 80), 
+                    THREE.MathUtils.clamp(targetY, -60, 60), 
                     THREE.MathUtils.clamp(targetZ, -10, 50)
                 );
 
-                // INCLINACIÓN Y ROTACIÓN
                 const vWrist = new THREE.Vector3(-lm[0].x, -lm[0].y, lm[0].z);
                 const vIndex = new THREE.Vector3(-lm[5].x, -lm[5].y, lm[5].z);
                 const vPinky = new THREE.Vector3(-lm[17].x, -lm[17].y, lm[17].z);
